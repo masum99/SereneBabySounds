@@ -2,11 +2,11 @@ name: 24-7-Live-Final-Fixed-Pos-V2
 
 on:
   workflow_dispatch:
-  schedule:
+#  schedule:
     # প্রতি ৫ ঘন্টা পর পর
-    - cron: '0 */5 * * *'
+#    - cron: '0 */5 * * *'
     # বাংলাদেশ রাত ৮ টায় চলবে
-    - cron: '0 14 * * *'
+#    - cron: '0 14 * * *'
 
 concurrency:
   group: youtube-live-final
