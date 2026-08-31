@@ -2,15 +2,13 @@ name: 24-7-Live-Final-Fixed-Pos-V2
 
 on:
   workflow_dispatch:
-#  schedule:
-    # প্রতি ৫ ঘন্টা পর পর
-#    - cron: '0 */5 * * *'
-    # বাংলাদেশ রাত ৮ টায় চলবে
-#    - cron: '0 14 * * *'
+  schedule:
+    # বাংলাদেশ সন্ধ্যা ৬টা (12:00 UTC) - প্রতিদিন অটো স্টার্ট
+    - cron: '0 12 * * *'
 
 concurrency:
   group: youtube-live-final
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   live:
@@ -41,21 +39,32 @@ jobs:
           SCROLL_TEXT: ${{ secrets.SCROLL_TEXT }}
           POPUP_TEXT: ${{ secrets.POPUP_TEXT }}
         run: |
+          H=$(date -u +%H)
+          NOW_TS=$(date -u +%s)
+          case "$H" in
+            1[2-7]) TARGET_TS=$(date -u -d "today 18:00" +%s); echo "Evening slot (runs until 12:00 AM BST)" ;;
+            *) echo "Outside evening window (UTC $H:00) - skipping"; exit 0 ;;
+          esac
+          DUR=$(( TARGET_TS - NOW_TS - 600 ))
+          if [ "$DUR" -le 300 ]; then echo "Not enough time left in window - skipping"; exit 0; fi
+          echo "Streaming for $((DUR/60)) minutes"
           SCROLL=$(echo "${SCROLL_TEXT:-SUBSCRIBE NOW - 24/7 LIVE}" | sed "s/'//g; s/:/ /g; s/|//g; s/,/ /g; s/\\\\//g")
           POPUP=$(echo "${POPUP_TEXT:-SUBSCRIBE NOW}" | sed "s/'//g; s/:/ /g; s/|//g; s/,/ /g; s/\\\\//g")
           SCROLL=${SCROLL//&/\\&}
           POPUP=${POPUP//&/\\&}
           FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
           PROBE=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 video.mp4)
-          W=$(echo $PROBE | cut -d',' -f1); H=$(echo $PROBE | cut -d',' -f2)
-          if [ -z "$W" ]; then W=1280; H=720; fi
-          if [ "$H" -gt "$W" ]; then OUT_W=720; OUT_H=1280; SCROLL_Y=1220; POPUP_Y=120; LIVE_Y=70; echo "Vertical"; else OUT_W=1280; OUT_H=720; SCROLL_Y=640; POPUP_Y=32; LIVE_Y=22; echo "Horizontal"; fi
+          W=$(echo $PROBE | cut -d',' -f1); H2=$(echo $PROBE | cut -d',' -f2)
+          if [ -z "$W" ]; then W=1280; H2=720; fi
+          if [ "$H2" -gt "$W" ]; then OUT_W=720; OUT_H=1280; SCROLL_Y=1220; POPUP_Y=120; LIVE_Y=70; echo "Vertical"; else OUT_W=1280; OUT_H=720; SCROLL_Y=640; POPUP_Y=32; LIVE_Y=22; echo "Horizontal"; fi
           LIVE_Y2=$((LIVE_Y+6))
           HAS_AUDIO=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 video.mp4 | wc -l)
-          if [ "$HAS_AUDIO" -eq 0 ]; then A_IN="-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100"; A_MAP="-map 0:v:0 -map 1:a:0 -c:v libx264 -preset veryfast -maxrate 2500k -bufsize 5000k -g 60 -pix_fmt yuv420p -c:a aac -b:a 128k -shortest"; else A_IN=""; A_MAP="-c:v libx264 -preset veryfast -maxrate 2500k -bufsize 5000k -g 60 -pix_fmt yuv420p -c:a aac -b:a 128k"; fi
+          if [ "$HAS_AUDIO" -eq 0 ]; then A_IN="-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100"; A_MAP="-map 0:v:0 -map 1:a:0 -c:v libx264 -preset veryfast -maxrate 2500k -bufsize 5000k -g 60 -pix_fmt yuv420p -c:a aac -b:a 128k"; else A_IN=""; A_MAP="-c:v libx264 -preset veryfast -maxrate 2500k -bufsize 5000k -g 60 -pix_fmt yuv420p -c:a aac -b:a 128k"; fi
           cat > /tmp/f.txt <<'ENDOFFILTER'
           scale=OUTW:OUTH:force_original_aspect_ratio=decrease,pad=OUTW:OUTH:(ow-iw)/2:(oh-ih)/2:color=black,drawbox=x=18:y=__LIVEY__:w=86:h=34:color=red@1:t=fill,drawtext=fontfile=FONTFILE:text='LIVE':x=28:y=__LIVEY2__:fontcolor=white:fontsize=20,drawtext=fontfile=FONTFILE:text='POPUPTXT':x=(w-tw)/2:y=__POPUPY__:fontcolor=white:fontsize=32+6*sin(2*PI*t/1.2):box=1:boxcolor=black@0.78:boxborderw=14:alpha=0.85+0.15*sin(2*PI*t*1.4):shadowcolor=black:shadowx=2:shadowy=2,drawtext=fontfile=FONTFILE:text='SCROLLTXT':x=w-mod(90*t\,w+tw):y=__SCROLLY__:fontcolor=yellow:fontsize=26:box=1:boxcolor=black@0.6:boxborderw=8
           ENDOFFILTER
           sed -i "s|__LIVEY2__|$LIVE_Y2|g; s|__LIVEY__|$LIVE_Y|g; s|__POPUPY__|$POPUP_Y|g; s|__SCROLLY__|$SCROLL_Y|g; s|OUTW|$OUT_W|g; s|OUTH|$OUT_H|g; s|FONTFILE|$FONT|g; s|POPUPTXT|$POPUP|g; s|SCROLLTXT|$SCROLL|g" /tmp/f.txt
           cat /tmp/f.txt
-          ffmpeg -re -stream_loop -1 -i video.mp4 $A_IN -vf "$(cat /tmp/f.txt)" $A_MAP -f flv rtmp://a.rtmp.youtube.com/live2/$YT_KEY
+          ffmpeg -re -stream_loop -1 -i video.mp4 $A_IN -vf "$(cat /tmp/f.txt)" $A_MAP -t $DUR -f flv rtmp://a.rtmp.youtube.com/live2/$YT_KEY
+          echo "Waiting 90s for YouTube to release the stream endpoint..."
+          sleep 90
