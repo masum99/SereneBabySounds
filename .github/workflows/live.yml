@@ -3,12 +3,14 @@ name: 24-7-Live-Final-Fixed-Pos-V2
 on:
   workflow_dispatch:
   schedule:
-    # বাংলাদেশ সন্ধ্যা ৬টা (12:00 UTC) - প্রতিদিন অটো স্টার্ট
+    # বাংলাদেশ সকাল ৬টা (00:00 UTC) - দুপুর ১২টা পর্যন্ত
+#    - cron: '0 0 * * *'
+    # বাংলাদেশ সন্ধ্যা ৬টা (12:00 UTC) - রাত ১২টা পর্যন্ত
     - cron: '0 12 * * *'
 
 concurrency:
   group: youtube-live-final
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   live:
@@ -42,8 +44,9 @@ jobs:
           H=$(date -u +%H)
           NOW_TS=$(date -u +%s)
           case "$H" in
-            1[2-7]) TARGET_TS=$(date -u -d "today 18:00" +%s); echo "Evening slot (runs until 12:00 AM BST)" ;;
-            *) echo "Outside evening window (UTC $H:00) - skipping"; exit 0 ;;
+            0[0-5]) TARGET_TS=$(date -u -d "today 06:00" +%s); echo "Morning slot (ends 12:00 PM BST)" ;;
+            1[2-7]) TARGET_TS=$(date -u -d "today 18:00" +%s); echo "Evening slot (ends 12:00 AM BST)" ;;
+            *) echo "Outside scheduled window (UTC $H:00) - skipping"; exit 0 ;;
           esac
           DUR=$(( TARGET_TS - NOW_TS - 600 ))
           if [ "$DUR" -le 300 ]; then echo "Not enough time left in window - skipping"; exit 0; fi
@@ -66,5 +69,3 @@ jobs:
           sed -i "s|__LIVEY2__|$LIVE_Y2|g; s|__LIVEY__|$LIVE_Y|g; s|__POPUPY__|$POPUP_Y|g; s|__SCROLLY__|$SCROLL_Y|g; s|OUTW|$OUT_W|g; s|OUTH|$OUT_H|g; s|FONTFILE|$FONT|g; s|POPUPTXT|$POPUP|g; s|SCROLLTXT|$SCROLL|g" /tmp/f.txt
           cat /tmp/f.txt
           ffmpeg -re -stream_loop -1 -i video.mp4 $A_IN -vf "$(cat /tmp/f.txt)" $A_MAP -t $DUR -f flv rtmp://a.rtmp.youtube.com/live2/$YT_KEY
-          echo "Waiting 90s for YouTube to release the stream endpoint..."
-          sleep 90
