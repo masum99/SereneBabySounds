@@ -2,12 +2,13 @@ name: 24-7-Live-Final-Fixed-Pos-V2
 
 on:
   workflow_dispatch:
-
+  schedule:
+    # বাংলাদেশ সন্ধ্যা ৬টা (12:00 UTC) - প্রতিদিন অটো স্টার্ট
+    - cron: '0 12 * * *'
 
 concurrency:
   group: youtube-live-final
-  cancel-in-progress: false
-
+  cancel-in-progress: true
 
 jobs:
   live:
@@ -19,7 +20,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg python3-pip fonts-noto-core
           pip3 install --break-system-packages --upgrade gdown yt-dlp || pip3 install --upgrade gdown yt-dlp
-
 
       - name: Download Video
         env:
@@ -33,15 +33,21 @@ jobs:
           fi
           ls -lh video.mp4
 
-
       - name: Start Stream
         env:
           YT_KEY: ${{ secrets.YT_KEY }}
           SCROLL_TEXT: ${{ secrets.SCROLL_TEXT }}
           POPUP_TEXT: ${{ secrets.POPUP_TEXT }}
         run: |
-          DUR=350
-          echo "Streaming for $DUR minutes"
+          H=$(date -u +%H)
+          NOW_TS=$(date -u +%s)
+          case "$H" in
+            1[2-7]) TARGET_TS=$(date -u -d "today 18:00" +%s); echo "Evening slot (runs until 12:00 AM BST)" ;;
+            *) echo "Outside evening window (UTC $H:00) - skipping"; exit 0 ;;
+          esac
+          DUR=$(( TARGET_TS - NOW_TS - 600 ))
+          if [ "$DUR" -le 300 ]; then echo "Not enough time left in window - skipping"; exit 0; fi
+          echo "Streaming for $((DUR/60)) minutes"
           SCROLL=$(echo "${SCROLL_TEXT:-SUBSCRIBE NOW - 24/7 LIVE}" | sed "s/'//g; s/:/ /g; s/|//g; s/,/ /g; s/\\\\//g")
           POPUP=$(echo "${POPUP_TEXT:-SUBSCRIBE NOW}" | sed "s/'//g; s/:/ /g; s/|//g; s/,/ /g; s/\\\\//g")
           SCROLL=${SCROLL//&/\\&}
