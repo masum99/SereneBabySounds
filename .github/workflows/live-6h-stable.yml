@@ -3,18 +3,19 @@ name: SereneBabySounds
 on:
   workflow_dispatch:
   schedule:
-    # BD Time 6AM, 12PM, 6PM, 12AM = UTC 0,6,12,18
-    # এটা দিলে 6AM থেকে 12 ঘন্টা এবং 6PM থেকে 12 ঘন্টা গ্যাপ ছাড়া চলবে
+    # BD 6AM, 12PM, 6PM, 12AM = UTC 0,6,12,18
     - cron: '0 0,6,12,18 * * *'
 
+# FIX 1: আগেরটা false ছিল, তাই নতুন Job queue হয়ে "In Progress" আটকে থাকতো।
+# true করে দিলে নতুন Job শুরু হওয়ার সাথে সাথে পুরাতন Job কে cancel করে seamless handover হবে
 concurrency:
-  group: youtube-live-continuous
-  cancel-in-progress: false
+  group: youtube-live-serene-baby
+  cancel-in-progress: true
 
 jobs:
   live:
     runs-on: ubuntu-latest
-    timeout-minutes: 370 # GitHub Free limit 6h, তাই 6h পর পর restart হবে কিন্তু live কাটবে না
+    timeout-minutes: 350 # 6 ঘন্টার কম রাখা হলো, GitHub limit 360
     steps:
       - name: Install Tools
         run: |
@@ -29,13 +30,14 @@ jobs:
           if echo "$VIDEO_URL" | grep -q "drive.google"; then
             FILEID=$(echo "$VIDEO_URL" | grep -oE 'id=[^&]+' | cut -d'=' -f2)
             [ -z "$FILEID" ] && FILEID=$(echo "$VIDEO_URL" | grep -oE '/d/[^/]+' | cut -d'/' -f3)
-            gdown "https://drive.google.com/uc?id=$FILEID" -O video.mp4
+            gdown --fuzzy "$VIDEO_URL" -O video.mp4 || gdown "https://drive.google.com/uc?id=$FILEID" -O video.mp4
           else
             yt-dlp -o video.mp4 "$VIDEO_URL" || curl -L -o video.mp4 "$VIDEO_URL"
           fi
           ls -lh video.mp4
+          ffprobe -v error -show_entries stream=codec_type -of csv video.mp4 | head
 
-      - name: Start Stream (Only LIVE Badge)
+      - name: Start Stream (Auto Reconnect - No Browser Needed)
         env:
           YT_KEY: ${{ secrets.YT_KEY }}
         run: |
@@ -45,6 +47,7 @@ jobs:
           if [ -z "$W" ]; then W=1280; H=720; fi
           if [ "$H" -gt "$W" ]; then OUT_W=720; OUT_H=1280; LIVE_Y=70; else OUT_W=1280; OUT_H=720; LIVE_Y=22; fi
           LIVE_Y2=$((LIVE_Y+6))
+          
           HAS_AUDIO=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 video.mp4 | wc -l)
           if [ "$HAS_AUDIO" -eq 0 ]; then
             A_IN="-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100"
@@ -52,8 +55,26 @@ jobs:
           else
             A_IN=""; A_MAP="-c:v libx264 -preset veryfast -maxrate 2500k -bufsize 5000k -g 60 -pix_fmt yuv420p -c:a aac -b:a 128k"
           fi
+
           cat > /tmp/f.txt <<'ENDOFFILTER'
           scale=OUTW:OUTH:force_original_aspect_ratio=decrease,pad=OUTW:OUTH:(ow-iw)/2:(oh-ih)/2:color=black,drawbox=x=18:y=__LIVEY__:w=86:h=34:color=red@1:t=fill,drawtext=fontfile=FONTFILE:text='LIVE':x=28:y=__LIVEY2__:fontcolor=white:fontsize=20
           ENDOFFILTER
           sed -i "s|__LIVEY2__|$LIVE_Y2|g; s|__LIVEY__|$LIVE_Y|g; s|OUTW|$OUT_W|g; s|OUTH|$OUT_H|g; s|FONTFILE|$FONT|g" /tmp/f.txt
-          ffmpeg -re -stream_loop -1 -i video.mp4 $A_IN -vf "$(cat /tmp/f.txt)" $A_MAP -f flv rtmp://a.rtmp.youtube.com/live2/$YT_KEY
+          cat /tmp/f.txt
+
+          # FIX 2: ব্রাউজার ছাড়া লাইভ চালু হওয়ার জন্য Auto Reconnect Loop
+          # YouTube RTMP ডিসকানেক্ট হলেও 5 সেকেন্ড পর আবার কানেক্ট হবে
+          END_TIME=$(( $(date +%s) + 340*60 ))
+          echo "Streaming until $(date -d @$END_TIME)"
+          
+          while [ $(date +%s) -lt $END_TIME ]; do
+            echo ">>> Pushing to YouTube RTMP..."
+            ffmpeg -re -stream_loop -1 -i video.mp4 $A_IN \
+              -vf "$(cat /tmp/f.txt)" \
+              $A_MAP \
+              -f flv rtmp://a.rtmp.youtube.com/live2/$YT_KEY || true
+            
+            echo "!!! FFmpeg exited with code $?. Retrying in 10 seconds..."
+            sleep 10
+          done
+          echo "Job time limit reached, handing over to next schedule."
